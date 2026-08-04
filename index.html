@@ -68,6 +68,27 @@
   .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
   .legend span{display:inline-flex;align-items:center;gap:6px}
   .dot{width:9px;height:9px;border-radius:3px;display:inline-block}
+  /* ── Tabla resumen por cliente ── */
+  .cli-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+  .cli-nombre{font-family:Spectral,serif;font-size:19px;font-weight:700;color:var(--ink)}
+  .cli-meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .kpi-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+  .kpi{flex:1;min-width:120px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kpi .kv{font-size:18px;font-weight:700;color:var(--ink)}
+  .kpi .kl{font-size:11px;color:var(--muted);margin-top:2px}
+  .pol-table{width:100%;border-collapse:collapse;font-size:13px}
+  .pol-table th{background:var(--ink);color:#fff;font-size:11.5px;font-weight:600;padding:8px 10px;text-align:left;white-space:nowrap}
+  .pol-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+  .pol-table tr:last-child td{border-bottom:0}
+  .pol-table tr.cancelada td{color:var(--muted);text-decoration:line-through}
+  .pol-table tr.cancelada .pill{text-decoration:none}
+  .pol-table tr:not(.cancelada):hover td{background:#f4f7fb}
+  .dias-chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .dias-ok{background:#DCFCE7;color:#166534}
+  .dias-pronto{background:#FEF9C3;color:#854D0E}
+  .dias-urgente{background:#FEE2E2;color:#991B1B}
+  .dias-vencida{background:#F3F4F6;color:#6B7280}
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
 </style>
 </head>
 <body>
@@ -112,6 +133,7 @@
   <div class="tabs">
     <div class="tab active" data-tab="ind">Individual</div>
     <div class="tab" data-tab="lote">Por lote</div>
+    <div class="tab" data-tab="cliente">Resumen por cliente</div>
   </div>
 
   <!-- INDIVIDUAL -->
@@ -150,6 +172,17 @@
     <div class="count" id="loteCount">Define un periodo para ver cuántos documentos se generarán.</div>
     <div class="bar" id="loteBarWrap" style="display:none"><i id="loteBar"></i></div>
     <div style="margin-top:16px"><button class="btn" id="btnLote" disabled>Generar lote (ZIP)</button></div>
+  </section>
+
+  <!-- RESUMEN POR CLIENTE -->
+  <section class="card" id="panel-cliente" style="display:none">
+    <h2>Resumen por cliente</h2>
+    <p class="hint">Busca por nombre de cliente. Se muestran sus pólizas desde 2025, ordenadas por fecha de vencimiento más próxima.</p>
+    <div class="grid g2" style="align-items:end;margin-bottom:8px">
+      <div><label>Buscar cliente</label><input type="search" id="qCliente" placeholder="Ej. JOSE FLORES" autocomplete="off"></div>
+      <div></div>
+    </div>
+    <div id="resCli"><div class="empty">Carga la base y escribe para buscar.</div></div>
   </section>
 
   <div class="foot">Arts Nova · herramienta interna de cobranza</div>
@@ -283,6 +316,7 @@ document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
   const tab=t.dataset.tab;
   document.getElementById('panel-ind').style.display=tab==='ind'?'':'none';
   document.getElementById('panel-lote').style.display=tab==='lote'?'':'none';
+  document.getElementById('panel-cliente').style.display=tab==='cliente'?'':'none';
 }));
 
 /* ===================== SEGMENTOS ===================== */
@@ -539,6 +573,238 @@ function generarYDescargar(polizas,scope){
   const doc=construirPDF(polizas,scope);
   const base=scope==='cliente'?(polizas[0]['Nombre']||'cliente'):('poliza_'+polizas[0]['IdPoliza']);
   doc.save(nombreArchivo(base)+'.pdf');
+}
+
+/* ===================== RESUMEN POR CLIENTE ===================== */
+const qCliente=document.getElementById('qCliente');
+const resCli=document.getElementById('resCli');
+qCliente.addEventListener('input',buscarCliente);
+
+function diasParaVencer(fechaFin){
+  if(!ENGINE.fechaValida(fechaFin))return null;
+  return Math.round((fechaFin.getTime()-HOY.getTime())/(1000*60*60*24));
+}
+
+function chipDias(dias,estatus){
+  if(estatus==='Cancelada por falta de pago'||estatus==='Cancelada manualmente')
+    return `<span class="dias-chip dias-vencida">Cancelada</span>`;
+  if(estatus==='Pagada')
+    return `<span class="dias-chip dias-vencida">—</span>`;
+  if(dias===null) return `<span class="dias-chip dias-vencida">Sin fecha</span>`;
+  if(dias<0) return `<span class="dias-chip dias-vencida">Vencida hace ${Math.abs(dias)}d</span>`;
+  if(dias<=30) return `<span class="dias-chip dias-urgente">${dias}d para vencer</span>`;
+  if(dias<=90) return `<span class="dias-chip dias-pronto">${dias}d para vencer</span>`;
+  return `<span class="dias-chip dias-ok">${dias}d para vencer</span>`;
+}
+
+function buscarCliente(){
+  if(!LISTO){resCli.innerHTML='<div class="empty">Primero carga la base de datos.</div>';return;}
+  const q=ENGINE.norm(qCliente.value);
+  if(q.length<2){resCli.innerHTML='<div class="empty">Escribe al menos 2 caracteres.</div>';return;}
+
+  // Agrupar por nombre normalizado
+  const map=new Map();
+  CLIENTES.forEach(p=>{
+    const k=ENGINE.norm(p['Nombre']);
+    if(!k.includes(q))return;
+    if(!map.has(k))map.set(k,{nombre:p['Nombre'],polizas:[]});
+    map.get(k).polizas.push(p);
+  });
+
+  if(!map.size){resCli.innerHTML='<div class="empty">Sin resultados.</div>';return;}
+
+  // Mostrar lista de clientes encontrados (máx 30)
+  const clientes=[...map.values()].slice(0,30);
+
+  resCli.innerHTML=clientes.map((c,ci)=>{
+    // Filtrar pólizas desde 2025 y calcular
+    const polizasCon2025=c.polizas
+      .map(p=>{
+        const r=ENGINE.calcular(p,PAGOS_IDX[String(p['IdPoliza'])]||[],HOY);
+        const anioInicio=ENGINE.fechaValida(r.vigenciaInicio)?r.vigenciaInicio.getFullYear():0;
+        const anioFin=ENGINE.fechaValida(r.vigenciaFin)?r.vigenciaFin.getFullYear():0;
+        return{p,r,anioInicio,anioFin};
+      })
+      .filter(({anioInicio,anioFin})=>anioFin>=2025||anioInicio>=2025);
+
+    if(!polizasCon2025.length)return'';
+
+    // Separar activas y canceladas; ordenar activas por días para vencer (más próximas primero)
+    const canceladasEstatus=new Set(['Cancelada por falta de pago','Cancelada manualmente']);
+    const activas=polizasCon2025
+      .filter(({r})=>!canceladasEstatus.has(r.estatus))
+      .sort((a,b)=>{
+        const da=ENGINE.fechaValida(a.r.vigenciaFin)?a.r.vigenciaFin.getTime():Infinity;
+        const db=ENGINE.fechaValida(b.r.vigenciaFin)?b.r.vigenciaFin.getTime():Infinity;
+        return da-db;
+      });
+    const canceladas=polizasCon2025.filter(({r})=>canceladasEstatus.has(r.estatus));
+    const ordenadas=[...activas,...canceladas];
+
+    // KPIs consolidados (solo activas para los montos)
+    const kpi=ordenadas.reduce((acc,{r})=>{
+      acc.costo+=r.costo;acc.pagado+=r.totalPagado;acc.saldo+=r.saldo;return acc;
+    },{costo:0,pagado:0,saldo:0});
+    const nActivas=activas.length;
+    const nCanceladas=canceladas.length;
+
+    // Asesores únicos
+    const asesores=[...new Set(ordenadas.map(({p})=>p['Asesor']).filter(Boolean))];
+
+    const filas=ordenadas.map(({p,r})=>{
+      const esCancelada=canceladasEstatus.has(r.estatus);
+      const dias=diasParaVencer(r.vigenciaFin);
+      const color=ENGINE.COLORES[r.estatus]||'#6B7280';
+      return `<tr class="${esCancelada?'cancelada':''}">
+        <td><b>${p['IdPoliza']}</b></td>
+        <td>${(p['Vehículo']||'—')+' '+(p['Modelo']||'')}</td>
+        <td>${p['Placas']||'—'}</td>
+        <td>${p['Asesor']||'—'}</td>
+        <td><span class="pill" style="background:${color}">${r.estatus}</span></td>
+        <td>${ENGINE.fmtFecha(r.vigenciaInicio)}</td>
+        <td>${ENGINE.fmtFecha(r.vigenciaFin)}</td>
+        <td>${chipDias(dias,r.estatus)}</td>
+        <td style="text-align:right">${ENGINE.fmtMoneda(r.costo)}</td>
+        <td style="text-align:right">${ENGINE.fmtMoneda(r.totalPagado)}</td>
+        <td style="text-align:right;font-weight:700;color:${r.saldo>0?'#D97706':'#0E7C66'}">${ENGINE.fmtMoneda(r.saldo)}</td>
+        <td style="text-align:right">${ENGINE.fmtMoneda(r.cuota)}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+    <div style="margin-bottom:24px">
+      <div class="cli-header">
+        <div>
+          <div class="cli-nombre">${c.nombre||'(sin nombre)'}</div>
+          <div class="cli-meta">${nActivas} póliza(s) activa(s)${nCanceladas?` · ${nCanceladas} cancelada(s)`:''}${asesores.length?' · Asesor(es): '+asesores.join(', '):''}</div>
+        </div>
+        <button class="btn" onclick="generarResumenClientePDF(${ci})">⬇ PDF resumen</button>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kv">${ENGINE.fmtMoneda(kpi.costo)}</div><div class="kl">Costo total (portafolio)</div></div>
+        <div class="kpi"><div class="kv">${ENGINE.fmtMoneda(kpi.pagado)}</div><div class="kl">Total pagado</div></div>
+        <div class="kpi"><div class="kv" style="color:${kpi.saldo>0?'#D97706':'#0E7C66'}">${ENGINE.fmtMoneda(kpi.saldo)}</div><div class="kl">Saldo pendiente</div></div>
+        <div class="kpi"><div class="kv">${nActivas}</div><div class="kl">Pólizas activas</div></div>
+      </div>
+      <div class="tbl-wrap">
+        <table class="pol-table">
+          <thead><tr>
+            <th>Póliza</th><th>Vehículo</th><th>Placas</th><th>Asesor</th><th>Estatus</th>
+            <th>Inicio vigencia</th><th>Fin vigencia</th><th>Días para vencer</th>
+            <th style="text-align:right">Costo</th><th style="text-align:right">Pagado</th>
+            <th style="text-align:right">Saldo</th><th style="text-align:right">Cuota</th>
+          </tr></thead>
+          <tbody>${filas}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).filter(Boolean).join('<hr style="border:0;border-top:1px solid var(--line);margin:8px 0 24px">');
+
+  if(!resCli.innerHTML.trim())resCli.innerHTML='<div class="empty">Sin pólizas desde 2025 para este cliente.</div>';
+
+  // Guardar referencia para PDF
+  window.__cliResumen=clientes;
+}
+
+function generarResumenClientePDF(ci){
+  const c=window.__cliResumen[ci];
+  if(!c)return;
+
+  const canceladasEstatus=new Set(['Cancelada por falta de pago','Cancelada manualmente']);
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'mm',format:'a4'});
+  const C=cfg();
+  const W=doc.internal.pageSize.getWidth();
+  let y=encabezado(doc,C);
+
+  // Título
+  doc.setFont('times','bold');doc.setFontSize(13);doc.setTextColor(22,35,61);
+  doc.text('RESUMEN DE PÓLIZAS POR CLIENTE',14,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(107,118,137);
+  doc.text(`Emitido: ${ENGINE.fmtFecha(HOY)}`,W-14,y,{align:'right'});
+  y+=8;
+
+  // Datos del cliente
+  const ref=c.polizas[0];
+  bloqueDatos(doc,14,y,'Cliente',[
+    ['Nombre',ref['Nombre']],
+    ['Teléfono',ref['Telefono 01']||'—'],
+    ['Municipio',ref['Municipio']||'—'],
+  ],W-28);
+  y+=22;
+
+  // Calcular y filtrar pólizas desde 2025
+  const polizasCon=c.polizas
+    .map(p=>{const r=ENGINE.calcular(p,PAGOS_IDX[String(p['IdPoliza'])]||[],HOY);return{p,r};})
+    .filter(({r})=>{
+      const af=ENGINE.fechaValida(r.vigenciaFin)?r.vigenciaFin.getFullYear():0;
+      const ai=ENGINE.fechaValida(r.vigenciaInicio)?r.vigenciaInicio.getFullYear():0;
+      return af>=2025||ai>=2025;
+    });
+
+  const activas=polizasCon.filter(({r})=>!canceladasEstatus.has(r.estatus))
+    .sort((a,b)=>{
+      const da=ENGINE.fechaValida(a.r.vigenciaFin)?a.r.vigenciaFin.getTime():Infinity;
+      const db=ENGINE.fechaValida(b.r.vigenciaFin)?b.r.vigenciaFin.getTime():Infinity;
+      return da-db;
+    });
+  const canceladas=polizasCon.filter(({r})=>canceladasEstatus.has(r.estatus));
+  const ordenadas=[...activas,...canceladas];
+
+  // Totales
+  const kpi=ordenadas.reduce((acc,{r})=>{acc.costo+=r.costo;acc.pagado+=r.totalPagado;acc.saldo+=r.saldo;return acc;},{costo:0,pagado:0,saldo:0});
+
+  // Tabla de pólizas
+  doc.autoTable({
+    startY:y,margin:{left:14,right:14},
+    head:[['Póliza','Vehículo / Placas','Asesor','Estatus','Fin vigencia','Días','Pagado','Saldo','Cuota']],
+    body:ordenadas.map(({p,r})=>{
+      const dias=diasParaVencer(r.vigenciaFin);
+      let diasTxt='—';
+      if(canceladasEstatus.has(r.estatus))diasTxt='—';
+      else if(dias===null)diasTxt='Sin fecha';
+      else if(dias<0)diasTxt=`Vencida ${Math.abs(dias)}d`;
+      else diasTxt=`${dias}d`;
+      return[
+        p['IdPoliza'],
+        `${p['Vehículo']||'—'} ${p['Modelo']||''}\n${p['Placas']||'—'}`,
+        p['Asesor']||'—',
+        r.estatus,
+        ENGINE.fmtFecha(r.vigenciaFin),
+        diasTxt,
+        ENGINE.fmtMoneda(r.totalPagado),
+        ENGINE.fmtMoneda(r.saldo),
+        ENGINE.fmtMoneda(r.cuota),
+      ];
+    }),
+    foot:[['','','','TOTALES','','',ENGINE.fmtMoneda(kpi.pagado),ENGINE.fmtMoneda(kpi.saldo),'']],
+    headStyles:{fillColor:[22,35,61],fontSize:7.5},
+    footStyles:{fillColor:[241,244,248],textColor:[22,35,61],fontStyle:'bold',fontSize:8},
+    bodyStyles:{fontSize:7.5},
+    columnStyles:{
+      6:{halign:'right'},7:{halign:'right',fontStyle:'bold'},8:{halign:'right'},
+      5:{halign:'center'},4:{halign:'center'}
+    },
+    didParseCell:d=>{
+      if(d.section==='body'&&d.column.index===3){
+        const col=hex(ENGINE.COLORES[d.cell.raw]||'#6B7280');
+        d.cell.styles.textColor=col;d.cell.styles.fontStyle='bold';
+      }
+      if(d.section==='body'){
+        const est=d.row.cells[3]&&d.row.cells[3].raw;
+        if(canceladasEstatus.has(est))d.cell.styles.textColor=[160,165,175];
+      }
+    }
+  });
+
+  // Pie de páginas
+  const n=doc.internal.getNumberOfPages();const H=doc.internal.pageSize.getHeight();
+  for(let i=1;i<=n;i++){doc.setPage(i);doc.setDrawColor(220,225,234);doc.line(14,H-14,W-14,H-14);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(150,158,170);
+    doc.text(`${C.nombre} · Resumen de pólizas por cliente`,14,H-9);
+    doc.text(`Página ${i} de ${n}`,W-14,H-9,{align:'right'});}
+
+  doc.save(nombreArchivo(ref['Nombre']||'cliente')+'_resumen.pdf');
 }
 </script>
 </body>
