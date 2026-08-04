@@ -97,13 +97,13 @@
   <!-- CARGA DE DATOS -->
   <section class="card">
     <h2>Base de datos</h2>
-    <p class="hint">Carga el archivo con las hojas <b>Bd Clientes</b> y <b>Pagos</b> (A.xlsx). Para integrarlo a Consulta de Pólizas puedes apuntar a la URL pública del Excel.</p>
+    <p class="hint">Se carga automáticamente <b>MUTUAL_2026.xlsx</b> desde GitHub. También puedes elegir un archivo local o ingresar otra URL.</p>
     <div class="file">
       <label class="filebox" id="dropLbl">
         <input type="file" id="fileXlsx" accept=".xlsx,.xls" hidden>
         Da clic para elegir el archivo .xlsx
       </label>
-      <button class="btn ghost" id="btnUrl">Cargar desde URL…</button>
+      <button class="btn ghost" id="btnUrl">Cargar desde otra URL…</button>
     </div>
     <div class="status-load" id="loadStatus">Sin datos cargados.</div>
   </section>
@@ -203,26 +203,68 @@ const HOY=new Date();
 const loadStatus=document.getElementById('loadStatus');
 function setLoad(html){loadStatus.innerHTML=html;}
 
+const GITHUB_URL='https://mutuclub.github.io/Estados_de_Cuenta/MUTUAL_2026.xlsx';
+
 async function procesarLibro(data){
   setLoad('Procesando…');
   const wb=XLSX.read(data,{type:'array',cellDates:true});
-  if(!wb.Sheets['Bd Clientes']||!wb.Sheets['Pagos']){
-    setLoad('<b style="color:#DC2626">No se encontraron las hojas «Bd Clientes» y «Pagos».</b>');return;}
+  if(!wb.Sheets['Bd Clientes']){
+    setLoad('<b style="color:#DC2626">No se encontró la hoja «Bd Clientes».</b>');return;}
+  if(!wb.Sheets['Bd Pagos']&&!wb.Sheets['Pagos Historicos']){
+    setLoad('<b style="color:#DC2626">No se encontró ninguna hoja de pagos (se esperan «Bd Pagos» y/o «Pagos Historicos»).</b>');return;}
   CLIENTES=XLSX.utils.sheet_to_json(wb.Sheets['Bd Clientes'],{defval:null});
-  const pg=XLSX.utils.sheet_to_json(wb.Sheets['Pagos'],{defval:null});
+
+  // Combinar Bd Pagos + Pagos Historicos; deduplicar por IdPoliza+Recibo+Monto
+  const normPago=p=>({
+    fecha:p['Fecha Pago'] instanceof Date?p['Fecha Pago']:null,
+    recibo:p['Número de Recibo'],
+    monto:ENGINE.nz(p['Monto de Pago'])
+  });
+  const seen=new Set();
+  const allPagos=[];
+  const addSheet=nombre=>{
+    if(!wb.Sheets[nombre])return;
+    const filas=XLSX.utils.sheet_to_json(wb.Sheets[nombre],{defval:null});
+    for(const p of filas){
+      const id=String(p['IdPoliza']);
+      const key=`${id}|${p['Número de Recibo']}|${ENGINE.nz(p['Monto de Pago'])}`;
+      if(seen.has(key))continue;
+      seen.add(key);
+      allPagos.push({id,pago:normPago(p)});
+    }
+  };
+  addSheet('Bd Pagos');
+  addSheet('Pagos Historicos');
+
   PAGOS_IDX={};
-  for(const p of pg){const id=String(p['IDPOLIZA']);(PAGOS_IDX[id]=PAGOS_IDX[id]||[]).push({fecha:p['FECHA'] instanceof Date?p['FECHA']:null,recibo:p['RECIBO'],monto:ENGINE.nz(p['MONTO'])});}
+  for(const {id,pago} of allPagos){(PAGOS_IDX[id]=PAGOS_IDX[id]||[]).push(pago);}
   LISTO=true;
-  setLoad(`<b>${CLIENTES.length.toLocaleString('es-MX')}</b> pólizas y <b>${pg.length.toLocaleString('es-MX')}</b> pagos cargados.`);
+  const totalPagos=Object.values(PAGOS_IDX).reduce((a,v)=>a+v.length,0);
+  setLoad(`<b>${CLIENTES.length.toLocaleString('es-MX')}</b> pólizas y <b>${totalPagos.toLocaleString('es-MX')}</b> pagos cargados.`);
   pintarLeyenda(); actualizarLote();
 }
+
+// Auto-carga desde GitHub al iniciar
+(async()=>{
+  setLoad('Cargando MUTUAL_2026.xlsx desde GitHub…');
+  try{
+    const res=await fetch(GITHUB_URL);
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const buf=await res.arrayBuffer();
+    procesarLibro(buf);
+    document.getElementById('dropLbl').lastChild.textContent='MUTUAL_2026.xlsx (GitHub)';
+  }catch(err){
+    setLoad('No se pudo cargar desde GitHub. Puedes cargar el archivo manualmente.');
+  }
+})();
+
 document.getElementById('fileXlsx').addEventListener('change',e=>{
   const f=e.target.files[0];if(!f)return;const r=new FileReader();
   r.onload=ev=>procesarLibro(ev.target.result);r.readAsArrayBuffer(f);
   document.getElementById('dropLbl').lastChild.textContent=f.name;
 });
 document.getElementById('btnUrl').addEventListener('click',async()=>{
-  const url=prompt('URL pública del archivo .xlsx (raw de GitHub, etc.):');if(!url)return;
+  const url=prompt('URL pública del archivo .xlsx:',GITHUB_URL);if(!url)return;
   setLoad('Descargando…');
   try{const res=await fetch(url);const buf=await res.arrayBuffer();procesarLibro(buf);}
   catch(err){setLoad('<b style="color:#DC2626">No se pudo descargar. Revisa la URL/CORS.</b>');}
