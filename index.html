@@ -617,7 +617,8 @@ function buscarCliente(){
   const clientes=[...map.values()].slice(0,30);
 
   resCli.innerHTML=clientes.map((c,ci)=>{
-    // Filtrar pólizas desde 2025 y calcular
+    // Filtrar pólizas con inicio de vigencia >= año actual - 1
+    const anioMinimo=HOY.getFullYear()-1;
     const polizasCon2025=c.polizas
       .map(p=>{
         const r=ENGINE.calcular(p,PAGOS_IDX[String(p['IdPoliza'])]||[],HOY);
@@ -625,7 +626,7 @@ function buscarCliente(){
         const anioFin=ENGINE.fechaValida(r.vigenciaFin)?r.vigenciaFin.getFullYear():0;
         return{p,r,anioInicio,anioFin};
       })
-      .filter(({anioInicio,anioFin})=>anioFin>=2025||anioInicio>=2025);
+      .filter(({anioInicio})=>anioInicio>=anioMinimo);
 
     if(!polizasCon2025.length)return'';
 
@@ -737,9 +738,8 @@ function generarResumenClientePDF(ci){
   const polizasCon=c.polizas
     .map(p=>{const r=ENGINE.calcular(p,PAGOS_IDX[String(p['IdPoliza'])]||[],HOY);return{p,r};})
     .filter(({r})=>{
-      const af=ENGINE.fechaValida(r.vigenciaFin)?r.vigenciaFin.getFullYear():0;
       const ai=ENGINE.fechaValida(r.vigenciaInicio)?r.vigenciaInicio.getFullYear():0;
-      return af>=2025||ai>=2025;
+      return ai>=HOY.getFullYear()-1;
     });
 
   const activas=polizasCon.filter(({r})=>!canceladasEstatus.has(r.estatus))
