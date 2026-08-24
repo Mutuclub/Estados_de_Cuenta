@@ -196,12 +196,18 @@ const ENGINE = (function(){
   const fechaValida=d=>d instanceof Date&&!isNaN(d)&&d.getFullYear()>=2015&&d.getFullYear()<=2030;
   function addMonths(date,n){const d=new Date(date.getTime());const day=d.getDate();d.setMonth(d.getMonth()+n);if(d.getDate()<day)d.setDate(0);return d;}
   function mesesTranscurridos(inicio,hoy){if(!(inicio instanceof Date)||isNaN(inicio))return null;let m=(hoy.getFullYear()-inicio.getFullYear())*12+(hoy.getMonth()-inicio.getMonth());if(hoy.getDate()<inicio.getDate())m-=1;return Math.max(0,m);}
+  function parseFecha(v){
+    if(v instanceof Date)return v;
+    if(typeof v==='number'&&v>40000&&v<60000)return new Date(Math.round((v-25569)*86400*1000));
+    if(typeof v==='string'&&v.trim()){const d=new Date(v);if(!isNaN(d))return d;}
+    return null;
+  }
   function fmtFecha(d){if(!fechaValida(d))return '—';const dd=String(d.getDate()).padStart(2,'0');const mm=String(d.getMonth()+1).padStart(2,'0');return `${dd}/${mm}/${d.getFullYear()}`;}
   function fmtMoneda(n){return '$'+(Math.round(nz(n)*100)/100).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});}
   function calcular(poliza,pagosDePoliza,hoy){
     hoy=hoy||new Date();
     const costo=nz(poliza['Costo']),ini=nz(poliza['Pago Inicial']),cuota=nz(poliza['Pagos de']);
-    const inicio=poliza['Fecha Inicio Vigencia'];
+    const inicio=parseFecha(poliza['Fecha Inicio Vigencia']);
     const sumaPagos=pagosDePoliza.reduce((a,p)=>a+nz(p.monto),0);
     const totalPagado=ini+sumaPagos, saldo=costo-totalPagado;
     const nCont=cuota>0?Math.max(0,Math.ceil((costo-ini)/cuota)):0;
@@ -222,7 +228,7 @@ const ENGINE = (function(){
     const tablaPagos=[];if(ini>0)tablaPagos.push({fecha:inicio,recibo:'ENGANCHE',monto:ini,tipo:'Pago Inicial'});
     const abonos=pagosDePoliza.slice().sort((a,b)=>{const av=fechaValida(a.fecha)?a.fecha.getTime():Infinity;const bv=fechaValida(b.fecha)?b.fecha.getTime():Infinity;return av-bv;});
     abonos.forEach(p=>tablaPagos.push({fecha:p.fecha,recibo:p.recibo,monto:nz(p.monto),tipo:'Abono'}));
-    return{costo,pagoInicial:ini,cuota,totalPagado,saldo,nMensualidades:nCont,estatus,atrasoMeses,proximoPago,calendario,tablaPagos,vigenciaInicio:inicio,vigenciaFin:poliza['Fecha Termino Vigencia']};
+    return{costo,pagoInicial:ini,cuota,totalPagado,saldo,nMensualidades:nCont,estatus,atrasoMeses,proximoPago,calendario,tablaPagos,vigenciaInicio:inicio,vigenciaFin:parseFecha(poliza['Fecha Termino Vigencia'])};
   }
   const COLORES={'Pagada':'#0E7C66','Vigente':'#2563EB','Atrasada':'#D97706','Problema':'#EA580C','Cancelada por falta de pago':'#DC2626','Cancelada manualmente':'#6B7280','Sin vigencia':'#6B7280'};
   return{nz,norm,fechaValida,addMonths,fmtFecha,fmtMoneda,calcular,COLORES};
@@ -249,7 +255,7 @@ async function procesarLibro(data){
 
   // Combinar Bd Pagos + Pagos Historicos; deduplicar por IdPoliza+Recibo+Monto
   const normPago=p=>({
-    fecha:p['Fecha Pago'] instanceof Date?p['Fecha Pago']:null,
+    fecha:parseFecha(p['Fecha Pago']),
     recibo:p['Número de Recibo'],
     monto:ENGINE.nz(p['Monto de Pago'])
   });
