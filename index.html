@@ -541,7 +541,7 @@ function pdfPoliza(doc,p,C){
       head:[['Mensualidad','Vence','Monto','Estado']],
       body:r.calendario.map(c=>[c.n,ENGINE.fmtFecha(c.vencimiento),ENGINE.fmtMoneda(c.monto),c.estado]),
       headStyles:{fillColor:[58,74,102],fontSize:8},
-      bodyStyles:{fontSize:8.5},columnStyles:{0:{cellWidth:24,halign:'center'},2:{halign:'right'},3:{halign:'center'}},
+      bodyStyles:{fontSize:8.5},columnStyles:{0:{cellWidth:24,halign:'center'},1:{halign:'center'},2:{halign:'center'},3:{halign:'center'}},
       didParseCell:d=>{if(d.section==='body'&&d.column.index===3){const c=colE[d.cell.raw];if(c){d.cell.styles.textColor=c;d.cell.styles.fontStyle='bold';}}}
     });
   }
