@@ -266,7 +266,11 @@ async function procesarLibro(data){
     const filas=XLSX.utils.sheet_to_json(wb.Sheets[nombre],{defval:null});
     for(const p of filas){
       const id=String(p['IdPoliza']);
-      const key=`${id}|${p['Número de Recibo']}|${ENGINE.nz(p['Monto de Pago'])}`;
+      // Clave de deduplicación: usa recibo si existe, si no usa fecha (evita colisiones en pagos sin recibo)
+      const _rec=String(p['Número de Recibo']||'').trim().replace(/^0+/,'');
+      const _fec=p['Fecha Pago'] instanceof Date ? p['Fecha Pago'].toISOString().slice(0,10) : String(p['Fecha Pago']||'').trim();
+      const _clavePago=(_rec && _rec!=='0') ? ('r:'+_rec) : ('f:'+_fec);
+      const key=`${id}|${_clavePago}`;
       if(seen.has(key))continue;
       seen.add(key);
       allPagos.push({id,pago:normPago(p)});
