@@ -1005,6 +1005,7 @@ function pintarCarteraAsesor(){
         <div class="cli-nombre">${esc(ASE_CARTERA.nombre)}</div>
         <div class="cli-meta">${todos.length} cliente(s)${q?` · mostrando ${vis.length}`:''}</div>
       </div>
+      <button class="btn" onclick="generarCarteraAsesorPDF()">🖨 Versión imprimible (PDF)</button>
     </div>
     <div class="kpi-row">
       <div class="kpi"><div class="kv">${todos.length}</div><div class="kl">Clientes</div></div>
@@ -1059,6 +1060,152 @@ resAse.addEventListener('click',e=>{
 });
 selAsesor.addEventListener('change',cargarCarteraAsesor);
 qAseCli.addEventListener('input',pintarCarteraAsesor);
+
+/* ===================== PDF IMPRIMIBLE: CARTERA DEL ASESOR ===================== */
+const EN_RIESGO=new Set(['Atrasada','Problema']);
+// Monto ya vencido y no cubierto: enganche + mensualidades con vencimiento a hoy, menos lo pagado
+function adeudoVencido(r){
+  let esp=r.pagoInicial;
+  r.calendario.forEach(c=>{if(c.vencimiento&&c.vencimiento<=HOY)esp+=c.monto;});
+  return Math.max(0,Math.min(esp,r.costo)-r.totalPagado);
+}
+
+function generarCarteraAsesorPDF(){
+  if(!ASE_CARTERA)return;
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'mm',format:'a4',orientation:'landscape'});
+  const C=cfg();
+  const W=doc.internal.pageSize.getWidth(),H=doc.internal.pageSize.getHeight();
+  let y=encabezado(doc,C);
+
+  // Título
+  doc.setFont('times','bold');doc.setFontSize(13);doc.setTextColor(22,35,61);
+  doc.text('CARTERA DEL ASESOR',14,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(107,118,137);
+  doc.text(`Emitido: ${ENGINE.fmtFecha(HOY)}   ·   Pólizas con inicio de vigencia desde ${HOY.getFullYear()-1}`,W-14,y,{align:'right'});
+  y+=7;
+  doc.setFont('helvetica','bold');doc.setFontSize(12);doc.setTextColor(22,35,61);
+  doc.text(ASE_CARTERA.nombre,14,y);
+  y+=6;
+
+  const clientes=ASE_CARTERA.clientes;
+  const todas=clientes.flatMap(c=>[...c.vig,...c.exp,...c.can]);
+  const riesgo=todas.filter(({r})=>EN_RIESGO.has(r.estatus));
+  const nAtr=riesgo.filter(({r})=>r.estatus==='Atrasada').length;
+  const nPro=riesgo.filter(({r})=>r.estatus==='Problema').length;
+  const deudaRiesgo=riesgo.reduce((a,{r})=>a+r.saldo,0);
+  const vencRiesgo=riesgo.reduce((a,{r})=>a+adeudoVencido(r),0);
+
+  // Indicadores a primera vista
+  const kpis=[
+    ['Clientes',String(clientes.length),[22,35,61]],
+    ['Pólizas vigentes',String(clientes.reduce((a,c)=>a+c.vig.length,0)),[14,124,102]],
+    ['Pólizas expiradas',String(clientes.reduce((a,c)=>a+c.exp.length,0)),[220,38,38]],
+    ['Pólizas canceladas',String(clientes.reduce((a,c)=>a+c.can.length,0)),[107,114,128]],
+    ['Atrasadas / En problema',`${nAtr} / ${nPro}`,[217,119,6]],
+    ['Saldo deudor en atraso',ENGINE.fmtMoneda(deudaRiesgo),[217,119,6]],
+  ];
+  const gap=3,bw=(W-28-gap*(kpis.length-1))/kpis.length;
+  kpis.forEach(([lbl,val,col],i)=>{
+    const x=14+i*(bw+gap);
+    doc.setFillColor(241,244,248);doc.setDrawColor(220,225,234);doc.roundedRect(x,y,bw,15,2,2,'FD');
+    doc.setFillColor(...col);doc.rect(x,y+2,1.2,11,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(12);doc.setTextColor(...col);doc.text(val,x+4,y+7);
+    doc.setFont('helvetica','normal');doc.setFontSize(7);doc.setTextColor(107,118,137);doc.text(lbl,x+4,y+11.8);
+  });
+  y+=20;
+  if(riesgo.length){
+    doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(154,52,18);
+    doc.text(`Monto ya vencido y no pagado en pólizas atrasadas y en problema: ${ENGINE.fmtMoneda(vencRiesgo)}`,14,y);
+    y+=6;
+  }
+
+  function titulo(t,n,col){
+    if(y>H-35){doc.addPage();y=20;}
+    doc.setFillColor(...col);doc.rect(14,y-3.6,2.2,5,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(22,35,61);
+    doc.text(`${t} (${n})`,18.5,y);y+=3;
+  }
+
+  // Filas agrupadas por cliente (nombre y teléfono combinados en la primera fila del cliente)
+  function tabla(grupos,cancel){
+    const body=[],meta=[];
+    grupos.forEach(({c,lista})=>{
+      lista.forEach(({p,r},i)=>{
+        const dias=diasParaVencer(r.vigenciaFin);
+        const diasTxt=cancel?'—':dias===null?'Sin fecha':dias<0?`Vencida ${Math.abs(dias)}d`:`${dias}d`;
+        const deudor=EN_RIESGO.has(r.estatus)
+          ?`${ENGINE.fmtMoneda(r.saldo)}\nVencido ${ENGINE.fmtMoneda(adeudoVencido(r))}`:'—';
+        const fila=[
+          p['IdPoliza'],
+          `${p['Vehículo']||'—'} ${p['Modelo']||''}\n${p['Placas']||'—'}`,
+          r.estatus,
+          ENGINE.fmtFecha(r.vigenciaFin),
+          diasTxt,
+          ENGINE.fmtMoneda(r.totalPagado),
+          deudor,
+          ENGINE.fmtMoneda(r.cuota),
+        ];
+        if(i===0)fila.unshift(
+          {content:c.nombre||'(sin nombre)',rowSpan:lista.length},
+          {content:String(c.tel||'—'),rowSpan:lista.length});
+        body.push(fila);meta.push(r.estatus);
+      });
+    });
+    const t=grupos.flatMap(g=>g.lista).filter(({r})=>EN_RIESGO.has(r.estatus)).reduce((a,{r})=>a+r.saldo,0);
+    doc.autoTable({
+      startY:y,margin:{left:14,right:14,top:16},
+      head:[['Cliente','Teléfono','Póliza','Vehículo / Placas','Estatus','Fin vigencia','Días','Pagado','Saldo deudor','Cuota']],
+      body,
+      foot:t>0?[[{content:'Saldo deudor de la sección',colSpan:8,styles:{halign:'right'}},ENGINE.fmtMoneda(t),'']]:undefined,
+      showFoot:'lastPage',
+      theme:'grid',
+      headStyles:{fillColor:[22,35,61],fontSize:7.5,lineColor:[22,35,61]},
+      footStyles:{fillColor:[255,247,237],textColor:[154,52,18],fontStyle:'bold',fontSize:8},
+      bodyStyles:{fontSize:7.5,lineColor:[220,225,234],lineWidth:.2,valign:'middle'},
+      columnStyles:{
+        0:{cellWidth:56,fontStyle:'bold'},1:{cellWidth:24},2:{cellWidth:15},3:{cellWidth:38},
+        4:{cellWidth:28},5:{cellWidth:20,halign:'center'},6:{cellWidth:22,halign:'center'},
+        7:{cellWidth:22,halign:'right'},8:{cellWidth:26,halign:'right'},9:{cellWidth:18,halign:'right'}
+      },
+      didParseCell:d=>{
+        if(d.section!=='body')return;
+        // Índice de fila de datos → estatus (las filas con rowSpan comparten índice de body)
+        const est=meta[d.row.index];
+        if(d.column.index>=2&&EN_RIESGO.has(est)){
+          d.cell.styles.fillColor=est==='Problema'?[255,237,213]:[254,243,199];
+        }
+        if(d.column.index===4){
+          d.cell.styles.textColor=hex(ENGINE.COLORES[est]||'#6B7280');d.cell.styles.fontStyle='bold';
+        }
+        if(d.column.index===6&&String(d.cell.raw).startsWith('Vencida'))d.cell.styles.textColor=[220,38,38];
+        if(d.column.index===8&&EN_RIESGO.has(est)){d.cell.styles.textColor=[154,52,18];d.cell.styles.fontStyle='bold';}
+        if(cancel&&d.column.index!==4&&d.column.index>=2)d.cell.styles.textColor=[160,165,175];
+      }
+    });
+    y=doc.lastAutoTable.finalY+9;
+  }
+
+  const gVig=clientes.filter(c=>c.vig.length).map(c=>({c,lista:c.vig}));
+  const gExp=clientes.filter(c=>c.exp.length)
+    .sort((a,b)=>b.ultExp-a.ultExp).map(c=>({c,lista:c.exp}));
+  const gCan=clientes.filter(c=>c.can.length)
+    .sort((a,b)=>String(a.nombre).localeCompare(String(b.nombre),'es')).map(c=>({c,lista:c.can}));
+
+  if(gVig.length){titulo('Pólizas vigentes',gVig.reduce((a,g)=>a+g.lista.length,0),[14,124,102]);tabla(gVig,false);}
+  if(gExp.length){titulo('Pólizas expiradas',gExp.reduce((a,g)=>a+g.lista.length,0),[220,38,38]);tabla(gExp,false);}
+  if(gCan.length){titulo('Pólizas canceladas',gCan.reduce((a,g)=>a+g.lista.length,0),[107,114,128]);tabla(gCan,true);}
+  if(!todas.length){doc.setFont('helvetica','normal');doc.setFontSize(10);doc.text('Sin pólizas en el periodo.',14,y);}
+
+  // Pie de página
+  const n=doc.internal.getNumberOfPages();
+  for(let i=1;i<=n;i++){doc.setPage(i);doc.setDrawColor(220,225,234);doc.line(14,H-12,W-14,H-12);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(150,158,170);
+    doc.text(`${C.nombre} · Cartera del asesor ${ASE_CARTERA.nombre}`,14,H-7);
+    doc.text(`Página ${i} de ${n}`,W-14,H-7,{align:'right'});}
+
+  doc.save('Cartera_'+nombreArchivo(ASE_CARTERA.nombre)+'.pdf');
+}
 </script>
 </body>
 </html>
