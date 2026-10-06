@@ -89,6 +89,28 @@
   .dias-urgente{background:#FEE2E2;color:#991B1B}
   .dias-vencida{background:#F3F4F6;color:#6B7280}
   .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  /* ── Por asesor ── */
+  select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:13.5px;background:#fff;color:var(--ink)}
+  select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .ase-table td.num,.ase-table th.num{text-align:right;white-space:nowrap}
+  .ase-table td.ctr,.ase-table th.ctr{text-align:center}
+  .ase-table tr.cli-row{cursor:pointer}
+  .ase-table tr.cli-row.abierto td{background:#EAF4F1}
+  .cli-btn{appearance:none;border:0;background:none;padding:0;font:inherit;font-weight:700;color:var(--ink);text-align:left;cursor:pointer}
+  .cli-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+  .cli-btn .flecha{display:inline-block;width:14px;color:var(--muted);transition:transform .15s}
+  .cli-row.abierto .cli-btn .flecha{transform:rotate(90deg)}
+  .ase-table tr.det > td{background:#F7F9FB;padding:12px 14px 16px}
+  .ase-table tr.det:hover > td{background:#F7F9FB}
+  .cnt{display:inline-block;min-width:22px;padding:1px 7px;border-radius:999px;font-size:11.5px;font-weight:700}
+  .cnt.v{background:#DCFCE7;color:#166534}.cnt.e{background:#FEE2E2;color:#991B1B}.cnt.c{background:#F3F4F6;color:#6B7280}
+  .cnt.cero{background:transparent;color:#B8C0CC;font-weight:500}
+  .sub-tit{font-size:12px;font-weight:700;color:var(--ink-soft);margin:12px 0 6px;display:flex;align-items:center;gap:7px}
+  .sub-tit:first-child{margin-top:0}
+  .sub-tit i{width:4px;height:13px;border-radius:2px;display:inline-block}
+  .det .pol-table{font-size:12.5px;background:#fff}
+  .det .pol-table th{background:#3A4A66;font-size:11px}
+  @media (prefers-reduced-motion:reduce){.cli-btn .flecha{transition:none}}
 </style>
 </head>
 <body>
@@ -134,6 +156,7 @@
     <div class="tab active" data-tab="ind">Individual</div>
     <div class="tab" data-tab="lote">Por lote</div>
     <div class="tab" data-tab="cliente">Resumen por cliente</div>
+    <div class="tab" data-tab="asesor">Por asesor</div>
   </div>
 
   <!-- INDIVIDUAL -->
@@ -183,6 +206,17 @@
       <div></div>
     </div>
     <div id="resCli"><div class="empty">Carga la base y escribe para buscar.</div></div>
+  </section>
+
+  <!-- POR ASESOR -->
+  <section class="card" id="panel-asesor" style="display:none">
+    <h2>Cartera por asesor</h2>
+    <p class="hint">Elige un asesor para ver a sus clientes y sus pólizas desde 2025. Los clientes se ordenan por la póliza vigente más próxima a vencer. Da clic en un cliente para ver el detalle.</p>
+    <div class="grid g2" style="align-items:end;margin-bottom:8px">
+      <div><label for="selAsesor">Asesor</label><select id="selAsesor" disabled><option value="">Carga la base de datos primero</option></select></div>
+      <div><label for="qAseCli">Filtrar clientes del asesor</label><input type="search" id="qAseCli" placeholder="Nombre, teléfono o placas" autocomplete="off" disabled></div>
+    </div>
+    <div id="resAse"><div class="empty">Elige un asesor para ver su cartera.</div></div>
   </section>
 
   <div class="foot">Arts Nova · herramienta interna de cobranza</div>
@@ -290,7 +324,7 @@ async function procesarLibro(data){
   LISTO=true;
   const totalPagos=Object.values(PAGOS_IDX).reduce((a,v)=>a+v.length,0);
   setLoad(`<b>${CLIENTES.length.toLocaleString('es-MX')}</b> pólizas y <b>${totalPagos.toLocaleString('es-MX')}</b> pagos cargados.`);
-  pintarLeyenda(); actualizarLote();
+  pintarLeyenda(); actualizarLote(); poblarAsesores();
 }
 
 // Auto-carga desde GitHub al iniciar
@@ -333,6 +367,7 @@ document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
   document.getElementById('panel-ind').style.display=tab==='ind'?'':'none';
   document.getElementById('panel-lote').style.display=tab==='lote'?'':'none';
   document.getElementById('panel-cliente').style.display=tab==='cliente'?'':'none';
+  document.getElementById('panel-asesor').style.display=tab==='asesor'?'':'none';
 }));
 
 /* ===================== SEGMENTOS ===================== */
@@ -852,6 +887,178 @@ function generarResumenClientePDF(ci){
 
   doc.save(nombreArchivo(ref['Nombre']||'cliente')+'_resumen.pdf');
 }
+
+/* ===================== POR ASESOR ===================== */
+const selAsesor=document.getElementById('selAsesor');
+const qAseCli=document.getElementById('qAseCli');
+const resAse=document.getElementById('resAse');
+const CANCELADAS_EST=new Set(['Cancelada por falta de pago','Cancelada manualmente']);
+let ASE_CARTERA=null;   // clientes del asesor seleccionado, ya calculados
+
+function enAlcance(r){  // mismo criterio que el resumen por cliente: inicio de vigencia desde el año pasado
+  return ENGINE.fechaValida(r.vigenciaInicio)&&r.vigenciaInicio.getFullYear()>=HOY.getFullYear()-1;
+}
+function grupoPoliza(r){
+  if(CANCELADAS_EST.has(r.estatus))return'cancelada';
+  if(!ENGINE.fechaValida(r.vigenciaFin))return'vigente';
+  return r.vigenciaFin.getTime()>=HOY.getTime()?'vigente':'expirada';
+}
+function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function poblarAsesores(){
+  const cuenta=new Map();
+  CLIENTES.forEach(p=>{
+    const nom=String(p['Asesor']||'').trim();if(!nom)return;
+    const r=ENGINE.calcular(p,PAGOS_IDX[String(p['IdPoliza'])]||[],HOY);
+    if(!enAlcance(r))return;
+    const k=ENGINE.norm(nom);
+    if(!cuenta.has(k))cuenta.set(k,{nombre:nom,n:0});
+    cuenta.get(k).n++;
+  });
+  const lista=[...cuenta.entries()].sort((a,b)=>a[1].nombre.localeCompare(b[1].nombre,'es'));
+  selAsesor.innerHTML='<option value="">Selecciona un asesor…</option>'+
+    lista.map(([k,v])=>`<option value="${esc(k)}">${esc(v.nombre)} (${v.n} pólizas)</option>`).join('');
+  selAsesor.disabled=false;
+  ASE_CARTERA=null;qAseCli.value='';qAseCli.disabled=true;
+  resAse.innerHTML=lista.length?'<div class="empty">Elige un asesor para ver su cartera.</div>'
+                               :'<div class="empty">No hay pólizas con asesor desde el año pasado.</div>';
+}
+
+function cargarCarteraAsesor(){
+  const k=selAsesor.value;
+  if(!k){ASE_CARTERA=null;qAseCli.disabled=true;resAse.innerHTML='<div class="empty">Elige un asesor para ver su cartera.</div>';return;}
+  const mapa=new Map();
+  CLIENTES.forEach(p=>{
+    if(ENGINE.norm(p['Asesor'])!==k)return;
+    const r=ENGINE.calcular(p,PAGOS_IDX[String(p['IdPoliza'])]||[],HOY);
+    if(!enAlcance(r))return;
+    const ck=ENGINE.norm(p['Nombre']);
+    if(!mapa.has(ck))mapa.set(ck,{nombre:p['Nombre'],tel:p['Telefono 01'],mun:p['Municipio'],vig:[],exp:[],can:[]});
+    const c=mapa.get(ck);
+    if(!c.tel&&p['Telefono 01'])c.tel=p['Telefono 01'];
+    if(!c.mun&&p['Municipio'])c.mun=p['Municipio'];
+    const g=grupoPoliza(r);
+    (g==='vigente'?c.vig:g==='expirada'?c.exp:c.can).push({p,r});
+  });
+  const fin=x=>ENGINE.fechaValida(x.r.vigenciaFin)?x.r.vigenciaFin.getTime():null;
+  const clientes=[...mapa.values()].map(c=>{
+    c.vig.sort((a,b)=>(fin(a)??Infinity)-(fin(b)??Infinity));
+    c.exp.sort((a,b)=>fin(b)-fin(a));
+    const todas=[...c.vig,...c.exp,...c.can];
+    c.pagado=todas.reduce((s,{r})=>s+r.totalPagado,0);
+    c.saldo=todas.reduce((s,{r})=>s+r.saldo,0);
+    c.proxVenc=c.vig.length?c.vig[0].r.vigenciaFin:null;
+    c.ultExp=c.exp.length?c.exp[0].r.vigenciaFin:null;
+    c.texto=ENGINE.norm([c.nombre,c.tel,...todas.map(({p})=>p['Placas']),...todas.map(({p})=>p['IdPoliza'])].join(' '));
+    return c;
+  });
+  // Orden: con vigentes (próxima a vencer primero) → solo expiradas (vencida más reciente primero) → solo canceladas
+  const rango=c=>c.vig.length?0:c.exp.length?1:2;
+  clientes.sort((a,b)=>{
+    const ra=rango(a),rb=rango(b);if(ra!==rb)return ra-rb;
+    if(ra===0)return(ENGINE.fechaValida(a.proxVenc)?a.proxVenc:Infinity)-(ENGINE.fechaValida(b.proxVenc)?b.proxVenc:Infinity);
+    if(ra===1)return b.ultExp-a.ultExp;
+    return String(a.nombre).localeCompare(String(b.nombre),'es');
+  });
+  ASE_CARTERA={nombre:selAsesor.options[selAsesor.selectedIndex].text.replace(/\s\(\d+ pólizas\)$/,''),clientes};
+  qAseCli.disabled=false;qAseCli.value='';
+  pintarCarteraAsesor();
+}
+
+function chipDiasAse(dias){
+  if(dias===null)return'<span class="dias-chip dias-vencida">Sin fecha</span>';
+  if(dias<0)return`<span class="dias-chip dias-vencida">Vencida hace ${Math.abs(dias)}d</span>`;
+  if(dias<=30)return`<span class="dias-chip dias-urgente">${dias}d para vencer</span>`;
+  if(dias<=90)return`<span class="dias-chip dias-pronto">${dias}d para vencer</span>`;
+  return`<span class="dias-chip dias-ok">${dias}d para vencer</span>`;
+}
+function cnt(n,cls){return`<span class="cnt ${n?cls:'cero'}">${n}</span>`;}
+
+function pintarCarteraAsesor(){
+  if(!ASE_CARTERA)return;
+  const q=ENGINE.norm(qAseCli.value);
+  const todos=ASE_CARTERA.clientes;
+  const vis=q?todos.filter(c=>c.texto.includes(q)):todos;
+
+  const T=todos.reduce((a,c)=>{a.vig+=c.vig.length;a.exp+=c.exp.length;a.can+=c.can.length;a.pag+=c.pagado;a.sal+=c.saldo;return a;},{vig:0,exp:0,can:0,pag:0,sal:0});
+
+  const filas=vis.map(c=>{
+    const ci=todos.indexOf(c);
+    const prox=c.proxVenc?`${ENGINE.fmtFecha(c.proxVenc)}<br>${chipDiasAse(diasParaVencer(c.proxVenc))}`
+              :c.ultExp?`<span style="color:var(--muted)">Venció ${ENGINE.fmtFecha(c.ultExp)}</span>`:'—';
+    return`<tr class="cli-row" data-ci="${ci}">
+      <td><button class="cli-btn" aria-expanded="false"><span class="flecha">▸</span>${esc(c.nombre||'(sin nombre)')}</button></td>
+      <td>${esc(c.tel||'—')}</td>
+      <td>${esc(c.mun||'—')}</td>
+      <td class="ctr">${cnt(c.vig.length,'v')}</td>
+      <td class="ctr">${cnt(c.exp.length,'e')}</td>
+      <td class="ctr">${cnt(c.can.length,'c')}</td>
+      <td>${prox}</td>
+      <td class="num">${ENGINE.fmtMoneda(c.pagado)}</td>
+      <td class="num" style="font-weight:700;color:${c.saldo>0?'#D97706':'#0E7C66'}">${ENGINE.fmtMoneda(c.saldo)}</td>
+    </tr>`;
+  }).join('');
+
+  resAse.innerHTML=`
+    <div class="cli-header">
+      <div>
+        <div class="cli-nombre">${esc(ASE_CARTERA.nombre)}</div>
+        <div class="cli-meta">${todos.length} cliente(s)${q?` · mostrando ${vis.length}`:''}</div>
+      </div>
+    </div>
+    <div class="kpi-row">
+      <div class="kpi"><div class="kv">${todos.length}</div><div class="kl">Clientes</div></div>
+      <div class="kpi"><div class="kv" style="color:#0E7C66">${T.vig}</div><div class="kl">Pólizas vigentes</div></div>
+      <div class="kpi"><div class="kv" style="color:#DC2626">${T.exp}</div><div class="kl">Pólizas expiradas</div></div>
+      <div class="kpi"><div class="kv" style="color:#6B7280">${T.can}</div><div class="kl">Pólizas canceladas</div></div>
+      <div class="kpi"><div class="kv">${ENGINE.fmtMoneda(T.pag)}</div><div class="kl">Total pagado</div></div>
+      <div class="kpi"><div class="kv" style="color:${T.sal>0?'#D97706':'#0E7C66'}">${ENGINE.fmtMoneda(T.sal)}</div><div class="kl">Saldo pendiente</div></div>
+    </div>
+    ${vis.length?`<div class="tbl-wrap">
+      <table class="pol-table ase-table">
+        <thead><tr>
+          <th>Cliente</th><th>Teléfono</th><th>Municipio</th>
+          <th class="ctr">Vigentes</th><th class="ctr">Expiradas</th><th class="ctr">Canceladas</th>
+          <th>Próximo vencimiento</th><th class="num">Pagado</th><th class="num">Saldo</th>
+        </tr></thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>`:'<div class="empty">Ningún cliente de este asesor coincide con el filtro.</div>'}`;
+}
+
+function detalleClienteAsesor(c){
+  const tabla=(lista,cancel)=>`<div class="tbl-wrap"><table class="pol-table">
+    <thead><tr><th>Póliza</th><th>Vehículo</th><th>Placas</th><th>Estatus</th><th>Inicio vigencia</th><th>Fin vigencia</th><th>Días</th>
+      <th style="text-align:right">Costo</th><th style="text-align:right">Pagado</th><th style="text-align:right">Saldo</th><th style="text-align:right">Cuota</th></tr></thead>
+    <tbody>${lista.map(({p,r})=>`<tr class="${cancel?'cancelada':''}">
+      <td><b>${esc(p['IdPoliza'])}</b></td>
+      <td>${esc((p['Vehículo']||'—')+' '+(p['Modelo']||''))}</td>
+      <td>${esc(p['Placas']||'—')}</td>
+      <td><span class="pill" style="background:${ENGINE.COLORES[r.estatus]||'#6B7280'}">${esc(r.estatus)}</span></td>
+      <td>${ENGINE.fmtFecha(r.vigenciaInicio)}</td>
+      <td>${ENGINE.fmtFecha(r.vigenciaFin)}</td>
+      <td>${cancel?'<span class="dias-chip dias-vencida">Cancelada</span>':chipDiasAse(diasParaVencer(r.vigenciaFin))}</td>
+      <td style="text-align:right">${ENGINE.fmtMoneda(r.costo)}</td>
+      <td style="text-align:right">${ENGINE.fmtMoneda(r.totalPagado)}</td>
+      <td style="text-align:right;font-weight:700;color:${r.saldo>0?'#D97706':'#0E7C66'}">${ENGINE.fmtMoneda(r.saldo)}</td>
+      <td style="text-align:right">${ENGINE.fmtMoneda(r.cuota)}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+  const sec=(tit,color,lista,cancel)=>lista.length?`<div class="sub-tit"><i style="background:${color}"></i>${tit} (${lista.length})</div>${tabla(lista,cancel)}`:'';
+  return sec('Pólizas vigentes','#0E7C66',c.vig,false)+sec('Pólizas expiradas','#DC2626',c.exp,false)+sec('Pólizas canceladas','#6B7280',c.can,true);
+}
+
+resAse.addEventListener('click',e=>{
+  const fila=e.target.closest('tr.cli-row');if(!fila||!ASE_CARTERA)return;
+  const btn=fila.querySelector('.cli-btn');
+  const sig=fila.nextElementSibling;
+  if(sig&&sig.classList.contains('det')){sig.remove();fila.classList.remove('abierto');btn.setAttribute('aria-expanded','false');return;}
+  const c=ASE_CARTERA.clientes[+fila.dataset.ci];
+  const det=document.createElement('tr');det.className='det';
+  det.innerHTML=`<td colspan="9">${detalleClienteAsesor(c)}</td>`;
+  fila.after(det);fila.classList.add('abierto');btn.setAttribute('aria-expanded','true');
+});
+selAsesor.addEventListener('change',cargarCarteraAsesor);
+qAseCli.addEventListener('input',pintarCarteraAsesor);
 </script>
 </body>
 </html>
