@@ -256,15 +256,8 @@ async function procesarLibro(data){
   // Combinar Bd Pagos + Pagos Historicos; deduplicar por IdPoliza+Recibo+Monto
   function _parseFechaPago(v){
     if(v instanceof Date)return v;
-    // Número de serie de Excel (días desde 1900)
     if(typeof v==='number'&&v>40000&&v<60000)return new Date(Math.round((v-25569)*86400*1000));
-    if(typeof v==='string'&&v.trim()){
-      // Formato DD/MM/YYYY (como viene del XLSX de MUTUAL)
-      const mDMY=v.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-      if(mDMY)return new Date(parseInt(mDMY[3]),parseInt(mDMY[2])-1,parseInt(mDMY[1]));
-      // Fallback: intentar parseo nativo
-      const d=new Date(v);if(!isNaN(d))return d;
-    }
+    if(typeof v==='string'&&v.trim()){const d=new Date(v);if(!isNaN(d))return d;}
     return null;
   }
   const normPago=p=>({
@@ -541,7 +534,7 @@ function pdfPoliza(doc,p,C){
       head:[['Mensualidad','Vence','Monto','Estado']],
       body:r.calendario.map(c=>[c.n,ENGINE.fmtFecha(c.vencimiento),ENGINE.fmtMoneda(c.monto),c.estado]),
       headStyles:{fillColor:[58,74,102],fontSize:8},
-      bodyStyles:{fontSize:8.5},columnStyles:{0:{cellWidth:24,halign:'center'},1:{halign:'center'},2:{halign:'center'},3:{halign:'center'}},
+      bodyStyles:{fontSize:8.5},columnStyles:{0:{cellWidth:24,halign:'center'},2:{halign:'right'},3:{halign:'center'}},
       didParseCell:d=>{if(d.section==='body'&&d.column.index===3){const c=colE[d.cell.raw];if(c){d.cell.styles.textColor=c;d.cell.styles.fontStyle='bold';}}}
     });
   }
@@ -765,60 +758,90 @@ function generarResumenClientePDF(ci){
       return ai>=HOY.getFullYear()-1;
     });
 
-  const activas=polizasCon.filter(({r})=>!canceladasEstatus.has(r.estatus))
-    .sort((a,b)=>{
-      const da=ENGINE.fechaValida(a.r.vigenciaFin)?a.r.vigenciaFin.getTime():Infinity;
-      const db=ENGINE.fechaValida(b.r.vigenciaFin)?b.r.vigenciaFin.getTime():Infinity;
-      return da-db;
-    });
+  // Separar: vigentes (fin de vigencia hoy o después, o sin fecha), expiradas y canceladas
+  const finMs=r=>ENGINE.fechaValida(r.vigenciaFin)?r.vigenciaFin.getTime():null;
+  const noCanceladas=polizasCon.filter(({r})=>!canceladasEstatus.has(r.estatus));
+  const vigentes=noCanceladas
+    .filter(({r})=>{const f=finMs(r);return f===null||f>=HOY.getTime();})
+    .sort((a,b)=>(finMs(a.r)??Infinity)-(finMs(b.r)??Infinity));   // más próxima a vencer primero
+  const expiradas=noCanceladas
+    .filter(({r})=>{const f=finMs(r);return f!==null&&f<HOY.getTime();})
+    .sort((a,b)=>finMs(b.r)-finMs(a.r));                            // la que venció más reciente primero
   const canceladas=polizasCon.filter(({r})=>canceladasEstatus.has(r.estatus));
-  const ordenadas=[...activas,...canceladas];
 
-  // Totales
-  const kpi=ordenadas.reduce((acc,{r})=>{acc.costo+=r.costo;acc.pagado+=r.totalPagado;acc.saldo+=r.saldo;return acc;},{costo:0,pagado:0,saldo:0});
+  const sumar=arr=>arr.reduce((acc,{r})=>{acc.costo+=r.costo;acc.pagado+=r.totalPagado;acc.saldo+=r.saldo;return acc;},{costo:0,pagado:0,saldo:0});
 
-  // Tabla de pólizas
-  doc.autoTable({
-    startY:y,margin:{left:14,right:14},
-    head:[['Póliza','Vehículo / Placas','Asesor','Estatus','Fin vigencia','Días','Pagado','Saldo','Cuota']],
-    body:ordenadas.map(({p,r})=>{
-      const dias=diasParaVencer(r.vigenciaFin);
-      let diasTxt='—';
-      if(canceladasEstatus.has(r.estatus))diasTxt='—';
-      else if(dias===null)diasTxt='Sin fecha';
-      else if(dias<0)diasTxt=`Vencida ${Math.abs(dias)}d`;
-      else diasTxt=`${dias}d`;
-      return[
-        p['IdPoliza'],
-        `${p['Vehículo']||'—'} ${p['Modelo']||''}\n${p['Placas']||'—'}`,
-        p['Asesor']||'—',
-        r.estatus,
-        ENGINE.fmtFecha(r.vigenciaFin),
-        diasTxt,
-        ENGINE.fmtMoneda(r.totalPagado),
-        ENGINE.fmtMoneda(r.saldo),
-        ENGINE.fmtMoneda(r.cuota),
-      ];
-    }),
-    foot:[['','','','TOTALES','','',ENGINE.fmtMoneda(kpi.pagado),ENGINE.fmtMoneda(kpi.saldo),'']],
-    headStyles:{fillColor:[22,35,61],fontSize:7.5},
-    footStyles:{fillColor:[241,244,248],textColor:[22,35,61],fontStyle:'bold',fontSize:8},
-    bodyStyles:{fontSize:7.5},
-    columnStyles:{
-      6:{halign:'right'},7:{halign:'right',fontStyle:'bold'},8:{halign:'right'},
-      5:{halign:'center'},4:{halign:'center'}
-    },
-    didParseCell:d=>{
-      if(d.section==='body'&&d.column.index===3){
-        const col=hex(ENGINE.COLORES[d.cell.raw]||'#6B7280');
-        d.cell.styles.textColor=col;d.cell.styles.fontStyle='bold';
+  const H0=doc.internal.pageSize.getHeight();
+  function tituloSeccion(texto,n,color){
+    if(y>H0-40){doc.addPage();y=20;}
+    doc.setFillColor(...color);doc.rect(14,y-3.6,2.2,5,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(22,35,61);
+    doc.text(`${texto} (${n})`,18.5,y);
+    y+=3;
+  }
+
+  function tablaSeccion(lista,etiquetaTotal,atenuar){
+    const t=sumar(lista);
+    doc.autoTable({
+      startY:y,margin:{left:14,right:14},
+      head:[['Póliza','Vehículo / Placas','Asesor','Estatus','Fin vigencia','Días','Pagado','Saldo','Cuota']],
+      body:lista.map(({p,r})=>{
+        const dias=diasParaVencer(r.vigenciaFin);
+        let diasTxt='—';
+        if(canceladasEstatus.has(r.estatus))diasTxt='—';
+        else if(dias===null)diasTxt='Sin fecha';
+        else if(dias<0)diasTxt=`Vencida ${Math.abs(dias)}d`;
+        else diasTxt=`${dias}d`;
+        return[
+          p['IdPoliza'],
+          `${p['Vehículo']||'—'} ${p['Modelo']||''}\n${p['Placas']||'—'}`,
+          p['Asesor']||'—',
+          r.estatus,
+          ENGINE.fmtFecha(r.vigenciaFin),
+          diasTxt,
+          ENGINE.fmtMoneda(r.totalPagado),
+          ENGINE.fmtMoneda(r.saldo),
+          ENGINE.fmtMoneda(r.cuota),
+        ];
+      }),
+      foot:[['','','',etiquetaTotal,'','',ENGINE.fmtMoneda(t.pagado),ENGINE.fmtMoneda(t.saldo),'']],
+      headStyles:{fillColor:[22,35,61],fontSize:7.5},
+      footStyles:{fillColor:[241,244,248],textColor:[22,35,61],fontStyle:'bold',fontSize:8},
+      bodyStyles:{fontSize:7.5},
+      // Anchos fijos para que todas las secciones queden alineadas (suman 182 mm)
+      columnStyles:{
+        0:{cellWidth:13},1:{cellWidth:28},2:{cellWidth:30},3:{cellWidth:22},
+        4:{cellWidth:20,halign:'center'},5:{cellWidth:19,halign:'center'},
+        6:{cellWidth:18,halign:'right'},7:{cellWidth:16,halign:'right',fontStyle:'bold'},8:{cellWidth:16,halign:'right'}
+      },
+      didParseCell:d=>{
+        if(d.section==='body'&&d.column.index===3){
+          const col=hex(ENGINE.COLORES[d.cell.raw]||'#6B7280');
+          d.cell.styles.textColor=col;d.cell.styles.fontStyle='bold';
+        }
+        if(d.section==='body'&&d.column.index===5&&String(d.cell.raw).startsWith('Vencida')){
+          d.cell.styles.textColor=[220,38,38];
+        }
+        if(d.section==='body'&&atenuar)d.cell.styles.textColor=[160,165,175];
       }
-      if(d.section==='body'){
-        const est=d.row.cells[3]&&d.row.cells[3].raw;
-        if(canceladasEstatus.has(est))d.cell.styles.textColor=[160,165,175];
-      }
-    }
-  });
+    });
+    y=doc.lastAutoTable.finalY+9;
+  }
+
+  if(vigentes.length){tituloSeccion('Pólizas vigentes',vigentes.length,[14,124,102]);tablaSeccion(vigentes,'SUBTOTAL',false);}
+  if(expiradas.length){tituloSeccion('Pólizas expiradas',expiradas.length,[220,38,38]);tablaSeccion(expiradas,'SUBTOTAL',false);}
+  if(canceladas.length){tituloSeccion('Pólizas canceladas',canceladas.length,[107,114,128]);tablaSeccion(canceladas,'SUBTOTAL',true);}
+
+  // Total general (solo si hay más de una sección)
+  const secciones=[vigentes,expiradas,canceladas].filter(a=>a.length).length;
+  if(secciones>1){
+    const T=sumar(polizasCon);
+    if(y>H0-26){doc.addPage();y=20;}
+    doc.setDrawColor(22,35,61);doc.setLineWidth(0.4);doc.line(14,y-4,W-14,y-4);
+    doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(22,35,61);
+    doc.text('TOTAL GENERAL',14,y+1);
+    doc.text(`Pagado ${ENGINE.fmtMoneda(T.pagado)}    Saldo ${ENGINE.fmtMoneda(T.saldo)}`,W-14,y+1,{align:'right'});
+  }
 
   // Pie de páginas
   const n=doc.internal.getNumberOfPages();const H=doc.internal.pageSize.getHeight();
